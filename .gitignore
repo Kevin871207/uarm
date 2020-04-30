@@ -3,7 +3,7 @@
 # Edit at https://www.gitignore.io/?templates=code,python,pycharm
 
 ### Code ###
-.vscode/*
+.vscode/
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
@@ -203,3 +203,5 @@ dmypy.json
 .pyre/
 
 # End of https://www.gitignore.io/api/code,python,pycharm
+
+/model

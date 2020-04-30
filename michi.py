@@ -36,7 +36,7 @@ import time
 import functools
 
 # Given a board of size NxN (N=9, 19, ...), we represent the position
-# as an (N+1)*(N+2) string, with '.' (empty), 'X' (to-play player),
+# as an (N+1)*(N+2) string, with '.' (empty), 'X' (t.o-play player),
 # 'x' (other player), and whitespace (off-board border to make rules
 # implementation easier).  Coordinates are just indices in this string.
 # You can simply print(board) when debugging.
@@ -46,7 +46,7 @@ empty = "\n".join([(N+1)*' '] + N*[' '+N*'.'] + [(N+2)*' '])
 colstr = 'ABCDEFGHJKLMNOPQRST'
 MAX_GAME_LEN = N * N * 3
 
-N_SIMS = 1400
+N_SIMS = 800
 RAVE_EQUIV = 3500
 EXPAND_VISITS = 8
 PRIOR_EVEN = 10  # should be even number; 0.5 prior
@@ -61,8 +61,8 @@ REPORT_PERIOD = 200
 PROB_HEURISTIC = {'capture': 0.9, 'pat3': 0.95}  # probability of heuristic suggestions being taken in playout
 PROB_SSAREJECT = 0.9  # probability of rejecting suggested self-atari in playout
 PROB_RSAREJECT = 0.5  # probability of rejecting random self-atari in playout; this is lower than above to allow nakade
-RESIGN_THRES = 0.2
-FASTPLAY20_THRES = 0.8  # if at 20% playouts winrate is >this, stop reading
+RESIGN_THRES = 0.1
+FASTPLAY20_THRES = 0.9  # if at 20% playouts winrate is >this, stop reading
 FASTPLAY5_THRES = 0.95  # if at 5% playouts winrate is >this, stop reading
 
 pat3src = [  # 3x3 playout patterns; X,O are colors, x,o are their inverses
@@ -330,7 +330,7 @@ class Position(namedtuple('Position', 'board cap n ko last last2 komi')):
 
 def empty_position():
     """ Return an initial board position """
-    return Position(board=empty, cap=(0, 0), n=0, ko=None, last=None, last2=None, komi=7.5)
+    return Position(board=empty, cap=(0, 0), n=0, ko=None, last=None, last2=None, komi=1)
 
 
 ###############
@@ -795,8 +795,9 @@ def tree_descend(tree, amaf_map, disp=False):
         random.shuffle(children)  # randomize the max in case of equal urgency
         node = max(children, key=lambda node: node.rave_urgency())
         nodes.append(node)
-
+        '''
         if disp:  print('chosen %s' % (str_coord(node.pos.last),), file=sys.stderr)
+        '''
         if node.pos.last is None:
             passes += 1
         else:
@@ -815,7 +816,9 @@ def tree_descend(tree, amaf_map, disp=False):
 def tree_update(nodes, amaf_map, score, disp=False):
     """ Store simulation result in the tree (@nodes is the tree path) """
     for node in reversed(nodes):
+        '''
         if disp:  print('updating', str_coord(node.pos.last), score < 0, file=sys.stderr)
+        '''
         node.w += score < 0  # score is for to-play, node statistics for just-played
         # Update the node children AMAF stats with moves we made
         # with their color
@@ -825,7 +828,9 @@ def tree_update(nodes, amaf_map, score, disp=False):
                 if child.pos.last is None:
                     continue
                 if amaf_map[child.pos.last] == amaf_map_value:
+                    '''
                     if disp:  print('  AMAF updating', str_coord(child.pos.last), score > 0, file=sys.stderr)
+                    '''
                     child.aw += score > 0  # reversed perspective
                     child.av += 1
         score = -score
@@ -833,7 +838,7 @@ def tree_update(nodes, amaf_map, score, disp=False):
 
 worker_pool = None
 
-def tree_search(tree, n, owner_map, disp=False):
+def tree_search(tree, n, owner_map, disp=False, re = False):
     """ Perform MCTS search from a given position for a given #iterations """
     # Initialize root node
     if tree.children is None:
@@ -871,9 +876,10 @@ def tree_search(tree, n, owner_map, disp=False):
             ongoing[0][0].wait(0.01 / n_workers)
         else:
             i += 1
+            '''
             if i > 0 and i % REPORT_PERIOD == 0:
                 print_tree_summary(tree, i, f=sys.stderr)
-
+            '''
             # Issue an mcplayout job to the worker pool
             nodes, amaf_map = outgoing.pop()
             ongoing.append((worker_pool.apply_async(mcplayout, (nodes[-1].pos, amaf_map, disp)), nodes))
@@ -904,7 +910,9 @@ def tree_search(tree, n, owner_map, disp=False):
     for c in range(W*W):
         owner_map[c] = float(owner_map[c]) / i
     dump_subtree(tree)
-    print_tree_summary(tree, i, f=sys.stderr)
+    pos_winrate = print_tree_summary(tree, i, f=sys.stderr)
+    if re:
+        return tree.best_move(), pos_winrate
     return tree.best_move()
 
 
@@ -953,11 +961,13 @@ def print_pos(pos, f=sys.stderr, owner_map=None):
 
 def dump_subtree(node, thres=N_SIMS/50, indent=0, f=sys.stderr, recurse=True):
     """ print this node and all its children with v >= thres. """
+    '''
     print("%s+- %s %.3f (%d/%d, prior %d/%d, rave %d/%d=%.3f, urgency %.3f)" %
           (indent*' ', str_coord(node.pos.last), node.winrate(),
            node.w, node.v, node.pw, node.pv, node.aw, node.av,
            float(node.aw)/node.av if node.av > 0 else float('nan'),
            node.rave_urgency()), file=f)
+    '''
     if not recurse:
         return
     for child in sorted(node.children, key=lambda n: n.v, reverse=True):
@@ -965,21 +975,31 @@ def dump_subtree(node, thres=N_SIMS/50, indent=0, f=sys.stderr, recurse=True):
             dump_subtree(child, thres=thres, indent=indent+3, f=f)
 
 
-def print_tree_summary(tree, sims, f=sys.stderr):
+def print_tree_summary(tree, sims, f=sys.stderr, printf = True):
     best_nodes = sorted(tree.children, key=lambda n: n.v, reverse=True)[:5]
     best_seq = []
     node = tree
     while node is not None:
         best_seq.append(node.pos.last)
         node = node.best_move()
-    print('[%4d] winrate %.3f | seq %s | can %s' %
-          (sims, best_nodes[0].winrate(), ' '.join([str_coord(c) for c in best_seq[1:6]]),
-           ' '.join(['%s(%.3f)' % (str_coord(n.pos.last), n.winrate()) for n in best_nodes])), file=f)
+    result ='[%4d] winrate %.3f | seq %s | can ' % (sims, best_nodes[0].winrate(), ' '.join([str_coord(c) for c in best_seq[1:6]]))
+    pos_winrate = []
+    for n in best_nodes:
+        c = '%s' % (str_coord(n.pos.last))
+        w = '%.3f' % (n.winrate())
+        pos_winrate.append((c, w))
+        result = result +c + '(' + w + ') '
+    if printf:
+        print(result, file = f)
+    return pos_winrate
+
 
 
 def parse_coord(s):
-    if s == 'pass':
+    if s == 'pass' :
         return None
+    if s == 'resign':
+        return 'resign'
     return W+1 + (N - int(s[1:])) * W + colstr.index(s[0].upper())
 
 
@@ -999,7 +1019,7 @@ def mcbenchmark(n):
         sumscore += mcplayout(empty_position(), W*W*[0])[0]
     return float(sumscore) / n
 
-
+'''
 def game_io(computer_black=False):
     """ A simple minimalistic text mode UI. """
 
@@ -1050,7 +1070,7 @@ def game_io(computer_black=False):
             print('I resign.')
             break
     print('Thank you for the game!')
-
+'''
 
 def gtp_io(line, tree):
     """ GTP interface for our program.  We can play only on the board size
@@ -1085,27 +1105,33 @@ def gtp_io(line, tree):
         c = parse_coord(command[2])
         if c is not None:
             # Find the next node in the game tree and proceed there
-
-            if tree.children is not None and filter(lambda n: n.pos.last == c, tree.children):
+            if c == 'resign':
+                ret = 'resign'
+                return tree, ret
+            if tree.children is not None and list(filter(lambda n: n.pos.last == c, tree.children)):
                 tree = list(filter(lambda n: n.pos.last == c, tree.children))[0]
             else:
                 # Several play commands in row, eye-filling move, etc.
                 tree = TreeNode(pos=tree.pos.move(c))
-            ret = str_coord(tree.pos.last)
         else:
             # Pass move
+            tree = TreeNode(pos=tree.pos.pass_move())
+            """
             if tree.children[0].pos.last is None:
                 tree = tree.children[0]
             else:
                 tree = TreeNode(pos=tree.pos.pass_move())
+            """
+        ret = str_coord(tree.pos.last)
     elif command[0] == "genmove":
-        tree = tree_search(tree, N_SIMS, owner_map)
+        tree, pos_winrate = tree_search(tree, N_SIMS, owner_map, re = True)
         if tree.pos.last is None:
             ret = 'pass'
         elif float(tree.w)/tree.v < RESIGN_THRES:
             ret = 'resign'
         else:
             ret = str_coord(tree.pos.last)
+        return tree, ret, pos_winrate
     elif command[0] == "final_score":
         score = tree.pos.score()
         if tree.pos.n % 2:
@@ -1143,36 +1169,37 @@ def gtp_io(line, tree):
     sys.stdout.flush()
     return tree, ret
 
-
-# if __name__ == "__main__":
-#     try:
-#         with open(spat_patterndict_file) as f:
-#             print('Loading pattern spatial dictionary...', file=sys.stderr)
-#             load_spat_patterndict(f)
-#         with open(large_patterns_file) as f:
-#             print('Loading large patterns...', file=sys.stderr)
-#             load_large_patterns(f)
-#         print('Done.', file=sys.stderr)
-#     except IOError as e:
-#         print('Warning: Cannot load pattern files: %s; will be much weaker, consider lowering EXPAND_VISITS 5->2' % (e,), file=sys.stderr)
-#     if len(sys.argv) < 2:
-#         # Default action
-#         game_io()
-#     elif sys.argv[1] == "white":
-#         game_io(computer_black=True)
-#     elif sys.argv[1] == "gtp":
-#         gtp_io()
-#     elif sys.argv[1] == "mcdebug":
-#         print(mcplayout(empty_position(), W*W*[0], disp=True)[0])
-#     elif sys.argv[1] == "mcbenchmark":
-#         print(mcbenchmark(20))
-#     elif sys.argv[1] == "tsbenchmark":
-#         t_start = time.time()
-#         print_pos(tree_search(TreeNode(pos=empty_position()), N_SIMS, W*W*[0], disp=False).pos)
-#         print('Tree search with %d playouts took %.3fs with %d threads; speed is %.3f playouts/thread/s' %
-#               (N_SIMS, time.time() - t_start, multiprocessing.cpu_count(),
-#                N_SIMS / ((time.time() - t_start) * multiprocessing.cpu_count())))
-#     elif sys.argv[1] == "tsdebug":
-#         print_pos(tree_search(TreeNode(pos=empty_position()), N_SIMS, W*W*[0], disp=True).pos)
-#     else:
-#         print('Unknown action', file=sys.stderr)
+'''
+if __name__ == "__main__":
+    try:
+        with open(spat_patterndict_file) as f:
+            print('Loading pattern spatial dictionary...', file=sys.stderr)
+            load_spat_patterndict(f)
+        with open(large_patterns_file) as f:
+            print('Loading large patterns...', file=sys.stderr)
+            load_large_patterns(f)
+        print('Done.', file=sys.stderr)
+    except IOError as e:
+        print('Warning: Cannot load pattern files: %s; will be much weaker, consider lowering EXPAND_VISITS 5->2' % (e,), file=sys.stderr)
+    if len(sys.argv) < 2:
+        # Default action
+        game_io()
+    elif sys.argv[1] == "white":
+        game_io(computer_black=True)
+    elif sys.argv[1] == "gtp":
+        gtp_io()
+    elif sys.argv[1] == "mcdebug":
+        print(mcplayout(empty_position(), W*W*[0], disp=True)[0])
+    elif sys.argv[1] == "mcbenchmark":
+        print(mcbenchmark(20))
+    elif sys.argv[1] == "tsbenchmark":
+        t_start = time.time()
+        print_pos(tree_search(TreeNode(pos=empty_position()), N_SIMS, W*W*[0], disp=False).pos)
+        print('Tree search with %d playouts took %.3fs with %d threads; speed is %.3f playouts/thread/s' %
+              (N_SIMS, time.time() - t_start, multiprocessing.cpu_count(),
+               N_SIMS / ((time.time() - t_start) * multiprocessing.cpu_count())))
+    elif sys.argv[1] == "tsdebug":
+        print_pos(tree_search(TreeNode(pos=empty_position()), N_SIMS, W*W*[0], disp=True).pos)
+    else:
+        print('Unknown action', file=sys.stderr)
+'''

@@ -1,5 +1,6 @@
 import numpy as np
 import tkinter as tk
+import copy
 """import everything made"""
 import michi
 import go
@@ -87,14 +88,13 @@ def display_board():
 
 
 def main():
-    tree = michi.TreeNode(pos=michi.empty_position())
-    tree.expand()
-    # arm = arm_control.Arm()
-    # arm.reset()
-    game_over = False
     end = False
 
     while not end:
+        tree = michi.TreeNode(pos=michi.empty_position())
+        tree.expand()
+        # arm = arm_control.Arm()
+        game_over = False
         h_color = input("Which side you wanna take (B/W):").upper()
         if h_color == 'B' or h_color == 'W':
             if h_color == 'W':
@@ -108,34 +108,37 @@ def main():
             continue
         board = Board()
         n_color = 'B'
-        c_move = 0
-        # arm.take_photo()  #????
+        c_move = h_move = None
         while not game_over:
             global remove_list, np_board
             remove_list = []
             display_board()
+            # arm.take_photo()
             if n_color == c_color:
-                c_move = input("c_move :\n")
-                tree, n = michi.gtp_io('play ' + c_color +' ' + c_move, tree)
-                # tree, c_move =michi.gtp_io('genmove', tree)
+                # c_move = input("c_move :\n")
+                # tree, n = michi.gtp_io('play ' + c_color +' ' + c_move, tree)
+                print('Wait for calculating!')
+                tree, c_move =michi.gtp_io('genmove', tree)
                 move = c_move
                 n_color = h_color
                 # arm.move(c_color, c_move)
             elif n_color == h_color:
-                # arm.take_photo()  #????
+                print('\nWait for recomand move by MCTS tree')
+                tree1 = copy.deepcopy(tree)
+                tree1, n =michi.gtp_io('genmove', tree1)
+                h_move = input("h_move and press enter to confirm your move\n")
                 # black_num, white_num, img_board = img_process.get_board(debug=False)
                 # print(img_board)
                 # print("black:", black_num, "white:", white_num)
                 # h_move = img_process.get_move(np_board, img_board, h_color)
                 # print(h_move)
-
-                h_move = input("h_move :\n")
                 tree, n = michi.gtp_io('play ' + h_color +' ' + h_move, tree)
                 move = h_move
                 n_color = c_color
+
             else:
                 print("Why am I here ?")
-            if move == 'pass':
+            if move == 'pass' or move == 'resign':
                 print('Pass move made! turn to another one!')
                 board.turn()
             else:
@@ -149,12 +152,15 @@ def main():
                     added_stone = Stone(board, (x, y), board.turn())
                 board.update_liberties(added_stone)
             print("remove : ", remove_list)
+
             while remove_list:
                 coords = remove_list.pop()
-                arm.remove_chess(n_color, coords)
+                print(coords)
+                # arm.remove_chess(n_color, coords)
 
-            if c_move == 'pass' and h_move == 'pass':
+            if (c_move == 'pass' and h_move == 'pass') or (c_move =='resign') or (h_move =='resign'):
                 game_over = True
+                # arm.game_over()
 
 
 if __name__ == "__main__":
